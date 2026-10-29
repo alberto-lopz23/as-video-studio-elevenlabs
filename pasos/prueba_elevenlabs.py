@@ -423,6 +423,60 @@ def item_historial(texto, desde=0, hasta=None, request_id="req-hist"):
             "model_id": "eleven_multilingual_v2", "source": "TTS", "settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": True}}
 
 
+def prueba_historial_estricto():
+    print("\n[4c] el historial solo confirma una generación identificable")
+    import time
+    m = motor()
+    texto = "Frase repetida para comprobar historial."
+    desde = int(time.time()) - 3
+    ajustes = cfg_el().get("voice_settings") or {}
+
+    def consulta(items, request_id=None):
+        with ConRed([historial(*items)]) as red:
+            return m.verificar_en_historial(
+                CLAVE_FALSA, texto, VOZ_EL, desde, esperas=[0],
+                modelo="eleven_multilingual_v2", ajustes=ajustes,
+                request_id=request_id)
+
+    buena = item_historial(texto, request_id="req-bueno")
+    resultado = consulta([buena], request_id="req-bueno")
+    igual(resultado["estado"], "procesada",
+          "una coincidencia reciente con el mismo request_id se confirma")
+
+    antigua = dict(buena, date_unix=desde - 100)
+    igual(consulta([antigua])["estado"], "no_encontrada",
+          "una coincidencia antigua no se atribuye a esta petición")
+
+    futura = dict(buena, date_unix=int(time.time()) + 600)
+    igual(consulta([futura])["estado"], "no_encontrada",
+          "una entrada futura no se atribuye a esta petición")
+
+    otra_voz = dict(buena, voice_id=VOZ_EL_2)
+    igual(consulta([otra_voz])["estado"], "no_encontrada",
+          "una coincidencia de otra voz no se atribuye a esta petición")
+
+    otro_modelo = dict(buena, model_id="eleven_flash_v2_5")
+    igual(consulta([otro_modelo])["estado"], "no_encontrada",
+          "una coincidencia de otro modelo no se atribuye a esta petición")
+
+    otros_ajustes = dict(buena, settings=dict(buena["settings"], stability=0.99))
+    igual(consulta([otros_ajustes])["estado"], "no_encontrada",
+          "una coincidencia con ajustes diferentes no se atribuye a esta petición")
+
+    duplicado = dict(buena, history_item_id="h2", request_id="req-duplicado")
+    igual(consulta([buena, duplicado])["estado"], "desconocido",
+          "dos generaciones compatibles dejan el resultado desconocido")
+
+    id_distinto = consulta([buena], request_id="req-no-coincide")
+    igual(id_distinto["estado"], "desconocido",
+          "si hay request_id conocido, no se acepta otro ID por coincidir el texto")
+
+    sin_fecha = dict(buena)
+    sin_fecha.pop("date_unix")
+    igual(consulta([sin_fecha])["estado"], "desconocido",
+          "si falta la fecha, no se da por confirmada la generación")
+
+
 def prueba_sin_cargos_duplicados():
     print("\n[4b] nunca se reenvia una peticion que pudo haberse cobrado")
     m = motor()
@@ -862,6 +916,7 @@ def main():
         prueba_formato_rechazado()
         prueba_errores_de_la_api()
         prueba_sin_cargos_duplicados()
+        prueba_historial_estricto()
         prueba_alineacion_y_secciones()
         prueba_catalogo()
         prueba_configuracion()

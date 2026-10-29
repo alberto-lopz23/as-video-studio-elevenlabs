@@ -95,12 +95,11 @@ _dormir = time.sleep             # sustituible en las pruebas
 TIEMPO_CONEXION_S = 30
 TIEMPO_RESPUESTA_S = 600
 
-#: Codigos con los que la API dice que NO ha aceptado la peticion: se pueden
-#: repetir sin riesgo de pagar dos veces.
+#: Solo los rechazos de rate limit se reintentan.
 REINTENTABLES_HTTP = (429,)
-#: Codigos que pueden llegar con la toma ya generada (un 504 de pasarela, un
-#: 500 a mitad): no se repiten solos. Ver `_post`.
-INCIERTOS_HTTP = (500, 502, 504)
+#: Un 5xx, incluido 503, no demuestra que la generacion no se haya procesado.
+#: Se trata como incierto y no se reenvia automaticamente.
+INCIERTOS_HTTP = (500, 502, 503, 504)
 
 #: Ante un resultado incierto se mira el historial de la cuenta (lectura, sin
 #: coste) para saber si la toma se genero. Esperas antes de cada consulta: el

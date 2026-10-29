@@ -97,7 +97,7 @@ TIEMPO_RESPUESTA_S = 600
 
 #: Codigos con los que la API dice que NO ha aceptado la peticion: se pueden
 #: repetir sin riesgo de pagar dos veces.
-REINTENTABLES_HTTP = (429, 503)
+REINTENTABLES_HTTP = (429,)
 #: Codigos que pueden llegar con la toma ya generada (un 504 de pasarela, un
 #: 500 a mitad): no se repiten solos. Ver `_post`.
 INCIERTOS_HTTP = (500, 502, 504)

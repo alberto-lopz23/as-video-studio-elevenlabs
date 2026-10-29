@@ -104,6 +104,7 @@ def _vacio():
         "openai": [],
         "cartesia": {"clave": ""},
         "elevenlabs": {"clave": ""},
+        "gemini": {"clave": ""},
         # La musica y los efectos: se buscan en catalogos con licencia libre y
         # cada uno pide su clave. Sin ellas el paso de sonido no busca nada y lo
         # dice; no impide montar el video.
@@ -151,7 +152,7 @@ def _normalizar(datos):
         })
     base["openai"] = cuentas[:MAX_OPENAI]
 
-    for suelta in ("cartesia", "elevenlabs"):
+    for suelta in ("cartesia", "elevenlabs", "gemini"):
         cruda = datos.get(suelta)
         if isinstance(cruda, dict):
             base[suelta]["clave"] = str(cruda.get("clave") or "").strip()
@@ -244,6 +245,7 @@ def adoptar_env():
                                     "clave": clave, "activa": True})
     datos["cartesia"]["clave"] = valores.get("CARTESIA_API_KEY", "") or ""
     datos["elevenlabs"]["clave"] = valores.get("ELEVENLABS_API_KEY", "") or ""
+    datos["gemini"]["clave"] = valores.get("GEMINI_API_KEY", "") or ""
     datos["jamendo"]["clave"] = valores.get("JAMENDO_CLIENT_ID", "") or ""
     datos["freesound"]["clave"] = valores.get("FREESOUND_API_KEY", "") or ""
     return datos
@@ -332,7 +334,7 @@ def _fusionar(actual, peticion):
     # es la que ya habia. Sin eso, editar la de Jamendo borraria la de Cartesia,
     # porque la clave de verdad no baja al navegador NUNCA y la pantalla manda
     # el centinela en su lugar.
-    for suelta in ("cartesia", "elevenlabs", "jamendo", "freesound"):
+    for suelta in ("cartesia", "elevenlabs", "gemini", "jamendo", "freesound"):
         if suelta in peticion:
             ficha = peticion.get(suelta)
             clave = ficha.get("clave") if isinstance(ficha, dict) else ficha
@@ -474,6 +476,8 @@ def espejar_env(datos=None):
         nuestras["CARTESIA_API_KEY"] = datos["cartesia"]["clave"]
     if datos["elevenlabs"]["clave"]:
         nuestras["ELEVENLABS_API_KEY"] = datos["elevenlabs"]["clave"]
+    if datos["gemini"]["clave"]:
+        nuestras["GEMINI_API_KEY"] = datos["gemini"]["clave"]
     if datos["jamendo"]["clave"]:
         nuestras["JAMENDO_CLIENT_ID"] = datos["jamendo"]["clave"]
     if datos["freesound"]["clave"]:
@@ -482,7 +486,7 @@ def espejar_env(datos=None):
     # Los nombres que ESTA pantalla escribe. Lo que no este aqui se conserva tal
     # cual y en su orden: un .env puede tener cosas que nadie de aqui gestiona.
     gestionadas = {"OPENAI_API_KEY", "CARTESIA_API_KEY", "ELEVENLABS_API_KEY",
-                   "JAMENDO_CLIENT_ID", "FREESOUND_API_KEY"} | {
+                   "GEMINI_API_KEY", "JAMENDO_CLIENT_ID", "FREESOUND_API_KEY"} | {
         f"OPENAI_API_KEY_{i}" for i in range(2, MAX_OPENAI + 1)}
 
     lineas, puestas = [], set()
@@ -537,6 +541,10 @@ def resumen(datos=None):
         "elevenlabs": {
             "puesta": bool(datos["elevenlabs"]["clave"]),
             "cola": tapar(datos["elevenlabs"]["clave"]),
+        },
+        "gemini": {
+            "puesta": bool(datos["gemini"]["clave"]),
+            "cola": tapar(datos["gemini"]["clave"]),
         },
         "claude_cli": {
             "cuentas": [{

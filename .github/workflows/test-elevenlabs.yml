@@ -4,10 +4,12 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "motores/voz_elevenlabs/**"
-      - "pasos/prueba_elevenlabs.py"
-      - "pasos/p4_voz.py"
-      - "nucleo/coste.py"
+      - "app.py"
+      - "motores/**"
+      - "nucleo/**"
+      - "pasos/**"
+      - "web/**"
+      - "prueba_api.py"
       - "requirements.txt"
       - ".github/workflows/test-elevenlabs.yml"
   workflow_dispatch:
@@ -32,3 +34,5 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run ElevenLabs mocked tests (no real API calls)
         run: python pasos/prueba_elevenlabs.py
+      - name: Run local API smoke tests (simulated; no paid API calls)
+        run: python prueba_api.py

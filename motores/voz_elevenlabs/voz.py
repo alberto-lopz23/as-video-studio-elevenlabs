@@ -631,8 +631,8 @@ def _post(url, cabeceras, cuerpo, formato, avisa):
             avisa(None, f"ElevenLabs: {ultimo}; reintento en {espera:.0f}s")
             _dormir(espera)
     raise RuntimeError(f"ElevenLabs no ha aceptado la peticion tras {REINTENTOS} "
-                       f"intentos ({ultimo}). No se ha procesado nada, asi que "
-                       f"no se ha cobrado.")
+                       f"intentos ({ultimo}). ElevenLabs rechazo las solicitudes HTTP 429; "
+                       f"no se ha cobrado ninguna de esas solicitudes.")
 
 
 def _cadena_de(fallo, profundidad=8):

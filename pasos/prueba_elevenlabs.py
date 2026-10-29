@@ -365,9 +365,14 @@ def prueba_errores_de_la_api():
                  toma_ok(texto)]) as red:
         m.sintetizar_toma(texto, cfg_el())
     igual(len(red.llamadas), 2, "un 429 se reintenta")
-    with ConRed([Respuesta(503, texto="x")] * 3) as red:
-        falla(lambda: m.sintetizar_toma(texto, cfg_el()),
-              "tres 503 seguidos: error claro", RuntimeError, contiene="no ha aceptado")
+    with ConRed([Respuesta(503, texto="x"), historial(), historial()]) as red:
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                      "un 503: resultado incierto, no se reintenta",
+                      m.ResultadoIncierto)
+        igual(len(llamadas_post(red)), 1, "un 503 produce una sola solicitud POST")
+        if fallo is not None:
+            igual(fallo.historial["estado"], "no_encontrada",
+                  "el 503 consulta el historial antes de permitir otro intento")
     with ConRed([Respuesta(401, {"detail": {"message": "invalid api key"}})]):
         fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
                       "clave rechazada: error claro", RuntimeError, contiene="clave")
@@ -410,10 +415,12 @@ def historial(*items, codigo=200):
 
 
 def item_historial(texto, desde=0, hasta=None, request_id="req-hist"):
+    import time
     hasta = len(texto) if hasta is None else hasta
     return {"history_item_id": "h1", "request_id": request_id, "text": texto,
             "character_count_change_from": desde, "character_count_change_to": hasta,
-            "date_unix": 2000000000}
+            "date_unix": int(time.time()), "voice_id": VOZ_EL,
+            "model_id": "eleven_multilingual_v2", "source": "TTS", "settings": {}}
 
 
 def prueba_sin_cargos_duplicados():
@@ -432,9 +439,11 @@ def prueba_sin_cargos_duplicados():
                  toma_ok(texto)]) as red:
         m.sintetizar_toma(texto, cfg_el())
     igual(len(llamadas_post(red)), 2, "un ConnectTimeout se reintenta")
-    with ConRed([Respuesta(503, {"detail": "unavailable"}), toma_ok(texto)]) as red:
-        m.sintetizar_toma(texto, cfg_el())
-    igual(len(llamadas_post(red)), 2, "un 503 se reintenta: la API no la acepto")
+    with ConRed([Respuesta(503, {"detail": "unavailable"}), historial(), historial()]) as red:
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                      "un 503 no se reintenta automáticamente",
+                      m.ResultadoIncierto)
+    igual(len(llamadas_post(red)), 1, "un 503 incierto no se reenvía")
     with ConRed([Respuesta(429, {"detail": "busy"})] * 3) as red:
         falla(lambda: m.sintetizar_toma(texto, cfg_el()),
               "tres 429 seguidos: error que dice que no se cobro nada",

@@ -34,5 +34,24 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run ElevenLabs mocked tests (no real API calls)
         run: python pasos/prueba_elevenlabs.py
+      - name: Prepare substitute system fonts for Linux smoke tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-dejavu-core
+          FONT_DIR="$RUNNER_TEMP/estudio-fonts"
+          mkdir -p "$FONT_DIR"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "$FONT_DIR/verdana.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf "$FONT_DIR/verdanab.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "$FONT_DIR/arial.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf "$FONT_DIR/arialbd.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "$FONT_DIR/tahoma.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf "$FONT_DIR/tahomabd.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf "$FONT_DIR/georgia.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf "$FONT_DIR/georgiab.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf "$FONT_DIR/consola.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf "$FONT_DIR/consolab.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf "$FONT_DIR/segoeui.ttf"
+          ln -sf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf "$FONT_DIR/segoeuib.ttf"
+          echo "ESTUDIO_FUENTES=$FONT_DIR" >> "$GITHUB_ENV"
       - name: Run local API smoke tests (simulated; no paid API calls)
         run: python prueba_api.py

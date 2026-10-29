@@ -6791,6 +6791,14 @@ def _asistente_listo():
     apuntado un fallo. `sin_probar` dice si alguna buena no se ha probado
     nunca: la pantalla la prueba sola al abrir la burbuja.
     """
+    # En modo simulado no se necesita Claude instalado ni una sesión real.
+    # Las pruebas de API deben poder comprobar el asistente sin credenciales.
+    modulo = _asistente()
+    if modulo.simulado():
+        ficha = {"id": "", "etiqueta": "modo simulado", "correo": "", "plan": "",
+                 "sesion": True, "salud": None, "motivo": ""}
+        return True, "", ficha, [ficha], False
+
     salud = _salud_cli()
     try:
         candidatas = _candidatas_del_asistente()

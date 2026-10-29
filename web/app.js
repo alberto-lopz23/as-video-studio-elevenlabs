@@ -2315,6 +2315,7 @@ function pintarConfig() {
   }
   caja.appendChild(bloquePruebaClaves());
   caja.appendChild(seccionOpenAI(ficha));
+  caja.appendChild(seccionGemini(ficha));
   caja.appendChild(seccionCalidadImagen());
   caja.appendChild(seccionElevenLabs(ficha));
   caja.appendChild(seccionVozDeNuevos());
@@ -2476,6 +2477,29 @@ function seccionOpenAI(ficha) {
       + (viva.medido ? ' (medido en tus tandas)' : ' (según el plan)')));
   }
   return caja;
+}
+
+/* GEMINI — respaldo automático de imágenes. */
+function seccionGemini(ficha) {
+  const gemini = ficha.gemini || { puesta: false, cola: '' };
+  const campo = h('input', { type: 'password', autocomplete: 'off',
+    placeholder: gemini.puesta ? ('puesta (' + gemini.cola + ')') : 'pega aquí tu clave de Gemini' });
+  return h('section', { clase: 'bloque-config' },
+    h('div', { clase: 'fila' },
+      h('h3', {}, 'Gemini — respaldo automático de imágenes'),
+      h('span', { clase: 'crece' }),
+      pastillaEstado(gemini.puesta ? 'ok' : 'vacio', gemini.puesta ? gemini.cola : 'sin poner')),
+    h('div', { clase: 'pista' },
+      'Si OpenAI se queda sin crédito, el Estudio cambiará automáticamente a Gemini para las imágenes pendientes. Las imágenes ya generadas se conservan. Gemini tiene su propia facturación y límites.'),
+    h('div', { clase: 'fila-clave' }, campo,
+      h('button', { clase: 'mini', onclick: () => {
+        if (!campo.value.trim()) { toast('pega la clave de Gemini', true); return; }
+        guardarClaves({ gemini: { clave: campo.value.trim() } }); campo.value = '';
+      } }, 'Guardar'),
+      (gemini.puesta ? h('button', { clase: 'mini fantasma peligro', onclick: () => {
+        if (!window.confirm('¿Quitar la clave de Gemini? El respaldo automático dejará de funcionar.')) return;
+        guardarClaves({ gemini: { clave: '' } });
+      } }, 'Quitar') : null)));
 }
 
 function seccionCartesia(ficha) {
@@ -2802,7 +2826,8 @@ async function probarCuentaCLI(cid) {
    que no cuestan dinero. Es el mismo bloque en Configuración y en la última
    tarjeta de la guía. */
 const NOMBRES_PROVEEDOR = {
-  openai: 'OpenAI — imágenes', cartesia: 'Cartesia — voz', elevenlabs: 'ElevenLabs — voz',
+  openai: 'OpenAI — imágenes', gemini: 'Gemini — imágenes de respaldo',
+  cartesia: 'Cartesia — voz', elevenlabs: 'ElevenLabs — voz',
   jamendo: 'Jamendo — música',
   freesound: 'FreeSound — efectos', claude: 'Claude',
 };

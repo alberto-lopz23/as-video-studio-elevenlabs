@@ -735,6 +735,23 @@ def _al_dia(destino, origen):
         return False
 
 
+def _generar_gemini(prompt, referencias, *, quality, tamano):
+    """Usa Gemini como respaldo cuando OpenAI no tiene crédito."""
+    import importlib.util
+    ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "imagen_gemini", "imagen.py")
+    if not os.path.isfile(ruta):
+        raise RuntimeError(
+            "OpenAI se quedó sin crédito y el motor de respaldo de Gemini no está instalado.")
+    spec = importlib.util.spec_from_file_location("_estudio_imagen_gemini", ruta)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("no se pudo cargar el motor de imágenes de Gemini")
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    print("[imagen] OpenAI sin crédito; cambiando automáticamente a Gemini", flush=True)
+    return modulo.generar(prompt, referencias, quality=quality, tamano=tamano)
+
+
 def generar(prompt, referencias, *, quality="low", tamano="apaisado",
             api_key=None, reintentos=6):
     # SIN REFERENCIAS SE DIBUJA SOLO CON EL TEXTO, por /generations. Aqui habia
@@ -751,10 +768,15 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado",
         raise ValueError("estas imagenes de referencia no existen: "
                          + ", ".join(str(f) for f in faltan[:5]))
 
-    # con api_key explicita se respeta esa clave (una cuenta efimera con su
-    # propio cubo); sin ella, cada intento elige la cuenta con hueco -- que es
-    # lo que reparte una tanda entre dos claves sin tocar a quien llama
+    # Si no hay una clave OpenAI configurada, empieza directamente con Gemini.
+    # Si las claves se agotaron en una llamada anterior, no repetimos el intento.
+    cuentas_actuales = _cuentas()
     cuenta_fija = _Cuenta("clave explicita", api_key) if api_key else None
+    if cuenta_fija is None:
+        con_clave = [c for c in cuentas_actuales if c.clave and not c.clave_rechazada]
+        if not con_clave or all(c.sin_saldo for c in con_clave):
+            if not all(getattr(c, "clave_rechazada", False) for c in cuentas_actuales):
+                return _generar_gemini(prompt, referencias, quality=quality, tamano=tamano)
     ultimo_error = None
     reintento_imagen = False
     r = None
@@ -847,6 +869,11 @@ def generar(prompt, referencias, *, quality="low", tamano="apaisado",
                 print(f"[imagen] {cuenta.nombre} sin credito: se sigue con "
                       f"las demas", flush=True)
                 continue
+            if cuenta_fija is None:
+                # La cuota agotada no se arregla esperando. Pasamos a Gemini
+                # para este plano y los siguientes sin rehacer los ya guardados.
+                return _generar_gemini(
+                    prompt, referencias, quality=quality, tamano=tamano)
             raise SinSaldo(
                 "la cuenta de OpenAI se ha quedado sin credito, asi que no se "
                 "pueden generar mas imagenes. Recarga en "

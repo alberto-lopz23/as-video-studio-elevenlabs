@@ -6613,7 +6613,9 @@ def probar_claves(cuerpo: dict = Body(default=None)):
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     cuentas = []
-    if con_claude:
+    # En modo simulado no se inspecciona el CLI ni se consulta ninguna sesión
+    # real; el doble de comprobar_claves devuelve resultados locales.
+    if con_claude and not PASOS_MODULOS.salud_cli.simulado():
         try:
             cuentas = [c for c in _candidatas_del_asistente()
                        if _sesion_de(c).get("conectada")]
@@ -6791,6 +6793,14 @@ def _asistente_listo():
     apuntado un fallo. `sin_probar` dice si alguna buena no se ha probado
     nunca: la pantalla la prueba sola al abrir la burbuja.
     """
+    # En modo simulado no se necesita Claude instalado ni una sesión real.
+    # Las pruebas de API deben poder comprobar el asistente sin credenciales.
+    modulo = _asistente()
+    if modulo.simulado():
+        ficha = {"id": "", "etiqueta": "modo simulado", "correo": "", "plan": "",
+                 "sesion": True, "salud": None, "motivo": ""}
+        return True, "", ficha, [ficha], False
+
     salud = _salud_cli()
     try:
         candidatas = _candidatas_del_asistente()
@@ -7008,6 +7018,12 @@ def probar_asistente():
     que hace que un cupo agotado se vea ANTES de preguntar y no como un error
     a mitad de la charla.
     """
+    modulo = _asistente()
+    if modulo.simulado():
+        ficha = estado_asistente()
+        ficha["probadas"] = [{"id": "", "estado": "simulado"}]
+        return ficha
+
     salud = _salud_cli()
     try:
         candidatas = _candidatas_del_asistente()

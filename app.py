@@ -7016,6 +7016,12 @@ def probar_asistente():
     que hace que un cupo agotado se vea ANTES de preguntar y no como un error
     a mitad de la charla.
     """
+    modulo = _asistente()
+    if modulo.simulado():
+        ficha = estado_asistente()
+        ficha["probadas"] = [{"id": "", "estado": "simulado"}]
+        return ficha
+
     salud = _salud_cli()
     try:
         candidatas = _candidatas_del_asistente()

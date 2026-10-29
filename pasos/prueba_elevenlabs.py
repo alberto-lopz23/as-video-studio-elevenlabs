@@ -369,7 +369,7 @@ def prueba_errores_de_la_api():
         fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
                       "un 503: resultado incierto, no se reintenta",
                       m.ResultadoIncierto)
-        igual(len(llamadas_post(red)), 1, "un 503 produce una sola solicitud POST")
+        igual(len([c for c in red.llamadas if "json" in c]), 1, "un 503 produce una sola solicitud POST")
         if fallo is not None:
             igual(fallo.historial["estado"], "no_encontrada",
                   "el 503 consulta el historial antes de permitir otro intento")

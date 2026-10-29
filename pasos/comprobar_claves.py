@@ -160,6 +160,24 @@ def probar_elevenlabs(clave):
                   f"{_texto_corto(respuesta)}")
 
 
+def probar_gemini(clave):
+    if not clave:
+        return _ficha("gemini", "sin_clave", "no hay clave de Gemini puesta")
+    respuesta, fallo = _pedir(
+        "GET",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image",
+        params={"key": clave})
+    if respuesta is None:
+        return _ficha("gemini", "sin_red", f"no se ha podido hablar con Gemini: {fallo}")
+    if respuesta.status_code == 200:
+        return _ficha("gemini", "ok", "la clave autentica y el modelo de imágenes está disponible")
+    if respuesta.status_code in (401, 403):
+        return _ficha("gemini", "mal",
+                      f"Gemini no reconoce la clave ({respuesta.status_code}): {_texto_corto(respuesta)}")
+    return _ficha("gemini", "mal",
+                  f"Gemini contesta {respuesta.status_code}: {_texto_corto(respuesta)}")
+
+
 def probar_jamendo(clave):
     if not clave:
         return _ficha("jamendo", "sin_clave", "no hay Client ID de Jamendo; el video "
@@ -227,6 +245,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         for proveedor, puesta in (("openai", bool(almacen["openai"])),
                                   ("cartesia", bool(almacen["cartesia"]["clave"])),
                                   ("elevenlabs", bool(almacen["elevenlabs"]["clave"])),
+                                  ("gemini", bool(almacen["gemini"]["clave"])),
                                   ("jamendo", bool(almacen["jamendo"]["clave"])),
                                   ("freesound", bool(almacen["freesound"]["clave"]))):
             fichas.append(_ficha(proveedor, "ok" if puesta else "sin_clave",
@@ -238,6 +257,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
         (probar_openai, (almacen["openai"][0]["clave"] if almacen["openai"] else "")),
         (probar_cartesia, almacen["cartesia"]["clave"]),
         (probar_elevenlabs, almacen["elevenlabs"]["clave"]),
+        (probar_gemini, almacen["gemini"]["clave"]),
         (probar_jamendo, almacen["jamendo"]["clave"]),
         (probar_freesound, almacen["freesound"]["clave"]),
     )
@@ -258,7 +278,7 @@ def probar_todas(cuentas_claude=(), con_claude=True):
 
 
 NOMBRES = {"openai": "OpenAI (imágenes)", "cartesia": "Cartesia (voz)",
-           "elevenlabs": "ElevenLabs (voz)",
+           "elevenlabs": "ElevenLabs (voz)", "gemini": "Gemini (respaldo de imágenes)",
            "jamendo": "Jamendo (música)", "freesound": "FreeSound (efectos)",
            "claude": "Claude"}
 

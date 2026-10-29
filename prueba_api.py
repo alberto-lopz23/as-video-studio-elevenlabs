@@ -1881,8 +1881,8 @@ def probar_salud_de_las_cuentas(cliente):
     respuesta, ficha = cliente.post("/api/claves/probar", {"claude": True})
     igual(respuesta.status_code, 200, f"probar todas las claves responde 200: {str(ficha)[:200]}")
     proveedores = [p["proveedor"] for p in ficha.get("pruebas") or []]
-    ok(proveedores[:5] == ["openai", "cartesia", "elevenlabs", "jamendo", "freesound"],
-       f"con los cinco servicios en orden: {proveedores}")
+    ok(proveedores[:6] == ["openai", "cartesia", "elevenlabs", "gemini", "jamendo", "freesound"],
+       f"con los seis servicios en orden: {proveedores}")
     ok("claude" in proveedores, "y Claude cuando se pide")
     ok(isinstance(ficha.get("resumen"), str) and "todo_bien" in ficha,
        "con un resumen legible y un veredicto")

@@ -420,7 +420,7 @@ def item_historial(texto, desde=0, hasta=None, request_id="req-hist"):
     return {"history_item_id": "h1", "request_id": request_id, "text": texto,
             "character_count_change_from": desde, "character_count_change_to": hasta,
             "date_unix": int(time.time()), "voice_id": VOZ_EL,
-            "model_id": "eleven_multilingual_v2", "source": "TTS", "settings": {}}
+            "model_id": "eleven_multilingual_v2", "source": "TTS", "settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.0, "use_speaker_boost": True}}
 
 
 def prueba_sin_cargos_duplicados():

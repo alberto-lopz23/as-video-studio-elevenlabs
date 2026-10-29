@@ -49,6 +49,12 @@ antes que lo que la justifica no es un bug.
 - **ElevenLabs: `output_format` va en la URL**, no en el cuerpo (en el cuerpo se
   ignora y llega MP3). El motor mira lo que llega —PCM, WAV o MP3— y que dure lo
   que dicen sus marcas antes de usarlo, y lo deja en PCM a `cfg["sr"]`.
+- **Una toma de ElevenLabs que pudo cobrarse no se repite sola.** Solo se
+  reintenta lo que seguro no se procesó (no se pudo conectar, 429, 503). Un
+  `ReadTimeout`, una conexión cortada tras enviar o un 500/502/504 levantan
+  `ResultadoIncierto`: se mira el historial de la cuenta (lectura, gratis) y se
+  dice si se generó; lo cobrado o posiblemente cobrado se anota en el coste
+  (`cobro: "cobrado" | "incierto"`) aunque la toma falle.
 - **La escucha de Cartesia conserva su firma de siempre** (`previsualizar`): las
   ya pagadas siguen valiendo.
 - **El coste va aparte**: `tts` es Cartesia y `tts_elevenlabs` ElevenLabs, cada

@@ -24,6 +24,15 @@ Por eso aqui:
 4. Sea cual sea el formato recibido, lo que sale de aqui es PCM s16le mono a
    la frecuencia de `cfg["sr"]`, que es el formato interno del pipeline.
 
+NUNCA SE PAGA DOS VECES LA MISMA TOMA
+------------------------------------
+Solo se reintenta lo que seguro no se ha procesado: no se pudo conectar (la
+peticion no salio), 429 y 503. Una peticion ENVIADA que se queda sin respuesta
+(ReadTimeout, conexion cortada, 500/502/504) puede estar generada y cobrada:
+no se repite, se mira el historial de la cuenta (lectura, sin coste) y se
+levanta ResultadoIncierto diciendo lo que se sabe. Lo cobrado o posiblemente
+cobrado viaja en `fallo.consumo` para que el medidor de coste lo anote.
+
 SIN VOZ POR DEFECTO
 -------------------
 No hay una voz elegida por nosotros: la voz sale del catalogo de la cuenta
@@ -44,9 +53,11 @@ import time
 import wave
 
 import requests
+from requests import exceptions as errores_http
 
 API_TTS = "https://api.elevenlabs.io/v1/text-to-speech/{voz_id}/with-timestamps"
 API_VOCES = "https://api.elevenlabs.io/v2/voices"
+API_HISTORIAL = "https://api.elevenlabs.io/v1/history"
 PROVEEDOR = "elevenlabs"
 
 MODELO = "eleven_multilingual_v2"
@@ -81,6 +92,21 @@ VOCES = {}
 REINTENTOS = 3
 ESPERA_BASE_S = 2.0
 _dormir = time.sleep             # sustituible en las pruebas
+TIEMPO_CONEXION_S = 30
+TIEMPO_RESPUESTA_S = 600
+
+#: Codigos con los que la API dice que NO ha aceptado la peticion: se pueden
+#: repetir sin riesgo de pagar dos veces.
+REINTENTABLES_HTTP = (429, 503)
+#: Codigos que pueden llegar con la toma ya generada (un 504 de pasarela, un
+#: 500 a mitad): no se repiten solos. Ver `_post`.
+INCIERTOS_HTTP = (500, 502, 504)
+
+#: Ante un resultado incierto se mira el historial de la cuenta (lectura, sin
+#: coste) para saber si la toma se genero. Esperas antes de cada consulta: el
+#: historial puede tardar unos segundos en reflejarla.
+VERIFICAR_HISTORIAL = True
+ESPERAS_HISTORIAL_S = (3.0, 10.0)
 
 CARPETA_SECRETOS = os.environ.get("ESTUDIO_SECRETOS") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -91,6 +117,25 @@ RUTA_CLAVES = os.path.join(CARPETA_SECRETOS, "claves.json")
 
 class AudioInvalido(RuntimeError):
     """La API contesto 200 pero lo que llego no es audio usable."""
+
+
+class ResultadoIncierto(RuntimeError):
+    """La peticion SE ENVIO y no se sabe si ElevenLabs la proceso (y cobro).
+
+    No se reintenta sola. `procesada` dice si el historial de la cuenta la
+    confirma; `historial` trae lo que contesto esa comprobacion; `consumo`, lo
+    que el medidor de coste tiene que anotar.
+    """
+
+    def __init__(self, mensaje, motivo="", request_id=None):
+        super().__init__(mensaje)
+        self.mensaje_base = mensaje
+        self.motivo = motivo
+        self.request_id = request_id
+        self.procesada = False
+        self.historial = None
+        self.caracteres = 0
+        self.consumo = []
 
 
 # ------------------------------------------------------------------ la clave
@@ -538,20 +583,43 @@ def _avisador(progreso):
 
 
 def _post(url, cabeceras, cuerpo, formato, avisa):
-    """POST con reintentos para 429, 5xx y caidas de red. Nada mas se reintenta."""
+    """POST que NUNCA reenvia una peticion que ElevenLabs pudo haber procesado.
+
+    Lo que se reintenta solo es lo que con seguridad no se ha procesado:
+
+    - errores ANTERIORES al envio: no se pudo abrir la conexion (DNS, conexion
+      rechazada, tiempo de conexion agotado, TLS). La peticion no salio.
+    - 429 y 503: la API contesta que no la ha aceptado (limite o servicio no
+      disponible).
+
+    Lo demas, una vez enviada la peticion, es INCIERTO: un ReadTimeout, una
+    conexion cortada a mitad de respuesta o un 500/502/504 pueden llegar
+    DESPUES de que ElevenLabs haya generado (y cobrado) el audio. Repetirlo a
+    ciegas es pagar dos veces, asi que se levanta ResultadoIncierto y quien
+    llama decide (ver `pedir_toma`, que mira el historial de la cuenta).
+    """
     ultimo = None
     for intento in range(REINTENTOS):
         try:
             respuesta = requests.post(url, headers=cabeceras, json=cuerpo,
                                       params={"output_format": formato},
-                                      timeout=(30, 600))
-        except (requests.ConnectionError, requests.Timeout) as fallo:
-            ultimo = f"sin red: {type(fallo).__name__}"
+                                      timeout=(TIEMPO_CONEXION_S, TIEMPO_RESPUESTA_S))
+        except errores_http.RequestException as fallo:
+            if not antes_del_envio(fallo):
+                raise ResultadoIncierto(
+                    f"la peticion se envio y no llego respuesta "
+                    f"({type(fallo).__name__})", motivo=type(fallo).__name__)
+            ultimo = f"no se pudo conectar ({type(fallo).__name__}); no se envio nada"
             respuesta = None
-        if respuesta is not None and respuesta.status_code not in (429, 500, 502,
-                                                                   503, 504):
-            return respuesta
         if respuesta is not None:
+            if respuesta.status_code in INCIERTOS_HTTP:
+                raise ResultadoIncierto(
+                    f"ElevenLabs contesto HTTP {respuesta.status_code} "
+                    f"({_texto_corto(respuesta)})",
+                    motivo=f"HTTP {respuesta.status_code}",
+                    request_id=(respuesta.headers or {}).get("request-id"))
+            if respuesta.status_code not in REINTENTABLES_HTTP:
+                return respuesta
             ultimo = f"HTTP {respuesta.status_code}: {_texto_corto(respuesta)}"
         if intento + 1 < REINTENTOS:
             espera = ESPERA_BASE_S * (2 ** intento)
@@ -562,11 +630,161 @@ def _post(url, cabeceras, cuerpo, formato, avisa):
                     pass
             avisa(None, f"ElevenLabs: {ultimo}; reintento en {espera:.0f}s")
             _dormir(espera)
-    raise RuntimeError(f"ElevenLabs no contesta tras {REINTENTOS} intentos ({ultimo})")
+    raise RuntimeError(f"ElevenLabs no ha aceptado la peticion tras {REINTENTOS} "
+                       f"intentos ({ultimo}). No se ha procesado nada, asi que "
+                       f"no se ha cobrado.")
+
+
+def _cadena_de(fallo, profundidad=8):
+    """El fallo y todo lo que lleva dentro (args, __cause__, .reason...)."""
+    vistos, pendientes, salida = set(), [fallo], []
+    while pendientes and len(salida) < 32:
+        actual = pendientes.pop(0)
+        if actual is None or id(actual) in vistos:
+            continue
+        vistos.add(id(actual))
+        salida.append(actual)
+        if len(salida) > profundidad * 4:
+            break
+        for siguiente in (getattr(actual, "reason", None),
+                          getattr(actual, "__cause__", None),
+                          getattr(actual, "__context__", None)):
+            if isinstance(siguiente, BaseException):
+                pendientes.append(siguiente)
+        for arg in getattr(actual, "args", ()) or ():
+            if isinstance(arg, BaseException):
+                pendientes.append(arg)
+    return salida
+
+
+#: Errores de urllib3 que solo ocurren ANTES de mandar la peticion. Se miran por
+#: nombre para no atarse a una version concreta de urllib3.
+_ANTES_DEL_ENVIO = {"NewConnectionError", "NameResolutionError",
+                    "ConnectTimeoutError"}
+
+
+def antes_del_envio(fallo):
+    """True solo si es SEGURO que la peticion no llego a enviarse.
+
+    ConnectTimeout y los fallos de TLS son del establecimiento de la conexion.
+    Un ConnectionError a secas no basta: «Connection aborted» o un reset llegan
+    tambien con la peticion ya enviada. Ante la duda, False.
+    """
+    if isinstance(fallo, errores_http.ReadTimeout):
+        return False
+    if isinstance(fallo, (errores_http.ConnectTimeout,
+                          errores_http.SSLError)):
+        return True
+    if isinstance(fallo, (errores_http.ChunkedEncodingError,
+                          errores_http.ContentDecodingError)):
+        return False
+    if isinstance(fallo, errores_http.ConnectionError):
+        return any(type(e).__name__ in _ANTES_DEL_ENVIO for e in _cadena_de(fallo))
+    return False
+
+
+def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None):
+    """¿Esta la toma en el historial de la cuenta? Solo lectura, no cuesta nada.
+
+    Devuelve {"estado": "procesada" | "no_encontrada" | "desconocido", ...}.
+    "no_encontrada" NO es una prueba de que no se cobrara: el historial puede
+    tardar en aparecer, o la cuenta puede no guardarlo.
+    """
+    esperas = ESPERAS_HISTORIAL_S if esperas is None else esperas
+    objetivo = " ".join(str(texto or "").split())
+    motivo = ""
+    for espera in esperas:
+        if espera:
+            _dormir(espera)
+        try:
+            respuesta = requests.get(
+                API_HISTORIAL, headers={"xi-api-key": api_key},
+                params={"voice_id": voz_id, "page_size": 50,
+                        "date_after_unix": max(0, int(desde_unix) - 5),
+                        "sort_direction": "desc"},
+                timeout=(TIEMPO_CONEXION_S, 30))
+        except errores_http.RequestException as fallo:
+            motivo = f"sin red al mirar el historial ({type(fallo).__name__})"
+            continue
+        if respuesta.status_code != 200:
+            return {"estado": "desconocido",
+                    "motivo": f"el historial contesta HTTP {respuesta.status_code} "
+                              f"({_texto_corto(respuesta)})"}
+        try:
+            items = (respuesta.json() or {}).get("history") or []
+        except ValueError:
+            return {"estado": "desconocido", "motivo": "el historial no es JSON"}
+        for item in items:
+            if " ".join(str(item.get("text") or "").split()) != objetivo:
+                continue
+            try:
+                cobrados = abs(int(item.get("character_count_change_to") or 0)
+                               - int(item.get("character_count_change_from") or 0))
+            except (TypeError, ValueError):
+                cobrados = 0
+            return {"estado": "procesada",
+                    "history_item_id": item.get("history_item_id"),
+                    "request_id": item.get("request_id"),
+                    "caracteres": cobrados or len(objetivo)}
+        motivo = ""
+    if motivo:
+        return {"estado": "desconocido", "motivo": motivo}
+    return {"estado": "no_encontrada",
+            "motivo": f"no aparece en el historial tras {sum(esperas):.0f}s"}
+
+
+def _con_consumo(fallo, consumo):
+    """Cuelga del fallo lo que se ha (o puede haberse) cobrado. Nunca lo tapa."""
+    try:
+        previo = list(getattr(fallo, "consumo", None) or [])
+        fallo.consumo = previo + [c for c in consumo
+                                   if not any(c is p for p in previo)]
+    except Exception:                                         # noqa: BLE001
+        pass
+    return fallo
+
+
+def _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa):
+    """Completa un ResultadoIncierto mirando el historial, y escribe el aviso."""
+    fallo.caracteres = len(texto)
+    historial = {"estado": "desconocido", "motivo": "comprobacion desactivada"}
+    if VERIFICAR_HISTORIAL:
+        avisa(None, "ElevenLabs no ha contestado; miro tu historial para saber "
+                    "si la toma se genero")
+        historial = verificar_en_historial(api_key, texto, voz_id, desde)
+    fallo.historial = historial
+    if historial["estado"] == "procesada":
+        fallo.procesada = True
+        fallo.caracteres = historial.get("caracteres") or len(texto)
+        fallo.request_id = historial.get("request_id") or fallo.request_id
+        fallo.args = (
+            f"ElevenLabs SI genero la toma ({fallo.caracteres} caracteres, "
+            f"request {fallo.request_id or historial.get('history_item_id')}) pero "
+            f"la respuesta no llego: {fallo.mensaje_base}. Se ha anotado como "
+            f"cobrada y NO se vuelve a sintetizar sola, porque grabarla otra vez "
+            f"se pagaria de nuevo. Si quieres la toma, vuelve a lanzar la voz.",)
+    elif historial["estado"] == "no_encontrada":
+        fallo.args = (
+            f"Resultado incierto: {fallo.mensaje_base}. La toma no aparece en tu "
+            f"historial de ElevenLabs ({historial['motivo']}), asi que "
+            f"probablemente no se cobro, pero no es seguro: no se reintenta sola. "
+            f"Vuelve a lanzar la voz si quieres intentarlo.",)
+    else:
+        fallo.args = (
+            f"Resultado incierto: {fallo.mensaje_base}. No se ha podido comprobar "
+            f"si se genero ({historial.get('motivo')}). Mira el historial "
+            f"(Speech history) de tu cuenta de ElevenLabs antes de volver a "
+            f"grabar: no se reintenta sola para no pagar dos veces.",)
+    return fallo
 
 
 def pedir_toma(texto, cfg, anterior="", siguiente="", progreso=None):
-    """Una peticion -> (pcm s16le mono a cfg['sr'], palabras, informe)."""
+    """Una peticion -> (pcm s16le mono a cfg['sr'], palabras, informe).
+
+    Si falla, el fallo lleva `consumo`: la lista de lo que se ha cobrado
+    ("cobrado": la API contesto 200 aunque el audio no sirviera) o puede
+    haberse cobrado ("incierto"). Es lo que anota el medidor de coste.
+    """
     avisa = _avisador(progreso)
     texto = _sin_etiquetas(texto)
     if not texto:
@@ -584,47 +802,67 @@ def pedir_toma(texto, cfg, anterior="", siguiente="", progreso=None):
     cabeceras = {"xi-api-key": api_key, "Content-Type": "application/json"}
     url = API_TTS.format(voz_id=voz_id)
     cuerpo = _cuerpo(texto, cfg, anterior, siguiente)
+    consumo = []
     respuesta, formato = None, pedido
-    for formato in candidatos:
-        respuesta = _post(url, cabeceras, cuerpo, formato, avisa)
-        if respuesta.status_code == 200:
-            break
-        if _rechaza_formato(respuesta) and formato != candidatos[-1]:
-            avisa(None, f"tu cuenta de ElevenLabs no admite {formato}; "
-                        f"pruebo otro formato")
-            continue
-        if respuesta.status_code in (401, 403):
-            raise RuntimeError(f"ElevenLabs no acepta la clave "
-                               f"(HTTP {respuesta.status_code}): "
+    desde = time.time()
+    try:
+        for formato in candidatos:
+            respuesta = _post(url, cabeceras, cuerpo, formato, avisa)
+            if respuesta.status_code == 200:
+                # UN 200 ES UNA TOMA COBRADA, sirva o no el audio que traiga
+                consumo.append({"caracteres": len(texto), "estado": "cobrado",
+                                "modelo": modelo, "formato": formato,
+                                "request_id": (respuesta.headers or {}).get("request-id")})
+                break
+            if _rechaza_formato(respuesta) and formato != candidatos[-1]:
+                avisa(None, f"tu cuenta de ElevenLabs no admite {formato}; "
+                            f"pruebo otro formato")
+                continue
+            if respuesta.status_code in (401, 403):
+                raise RuntimeError(f"ElevenLabs no acepta la clave "
+                                   f"(HTTP {respuesta.status_code}): "
+                                   f"{_texto_corto(respuesta)}")
+            if respuesta.status_code == 404:
+                raise RuntimeError(f"ElevenLabs no encuentra la voz {voz_id!r} en tu "
+                                   f"cuenta (HTTP 404). Elige otra en el paso Voz.")
+            raise RuntimeError(f"ElevenLabs HTTP {respuesta.status_code}: "
                                f"{_texto_corto(respuesta)}")
-        if respuesta.status_code == 404:
-            raise RuntimeError(f"ElevenLabs no encuentra la voz {voz_id!r} en tu "
-                               f"cuenta (HTTP 404). Elige otra en el paso Voz.")
-        raise RuntimeError(f"ElevenLabs HTTP {respuesta.status_code}: "
-                           f"{_texto_corto(respuesta)}")
-    try:
-        datos = respuesta.json()
-    except ValueError:
-        raise AudioInvalido("ElevenLabs contesto 200 sin JSON: el endpoint "
-                            "with-timestamps devuelve audio en base64 dentro de un JSON")
-    audio = datos.get("audio_base64") if isinstance(datos, dict) else None
-    if not audio:
-        raise AudioInvalido("ElevenLabs devolvio la toma sin audio")
-    try:
-        crudo = base64.b64decode(audio, validate=True)
-    except (ValueError, TypeError):
-        raise AudioInvalido("el audio de ElevenLabs no es base64 valido")
-    pcm, origen = decodificar_audio(crudo, formato, sr_destino)
-    alineacion = datos.get("alignment") or datos.get("normalized_alignment") or {}
-    palabras = _palabras_de_alineacion(alineacion)
-    if not palabras:
-        raise AudioInvalido("ElevenLabs devolvio audio sin marcas de palabra: "
-                            "sin marcas no se puede sincronizar el montaje")
-    duracion = validar_duracion(pcm, sr_destino, palabras)
+        try:
+            datos = respuesta.json()
+        except ValueError:
+            raise AudioInvalido("ElevenLabs contesto 200 sin JSON: el endpoint "
+                                "with-timestamps devuelve audio en base64 dentro de un JSON")
+        audio = datos.get("audio_base64") if isinstance(datos, dict) else None
+        if not audio:
+            raise AudioInvalido("ElevenLabs devolvio la toma sin audio")
+        try:
+            crudo = base64.b64decode(audio, validate=True)
+        except (ValueError, TypeError):
+            raise AudioInvalido("el audio de ElevenLabs no es base64 valido")
+        pcm, origen = decodificar_audio(crudo, formato, sr_destino)
+        alineacion = datos.get("alignment") or datos.get("normalized_alignment") or {}
+        palabras = _palabras_de_alineacion(alineacion)
+        if not palabras:
+            raise AudioInvalido("ElevenLabs devolvio audio sin marcas de palabra: "
+                                "sin marcas no se puede sincronizar el montaje")
+        duracion = validar_duracion(pcm, sr_destino, palabras)
+    except ResultadoIncierto as fallo:
+        _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa)
+        consumo.append({"caracteres": fallo.caracteres,
+                        "estado": "cobrado" if fallo.procesada else "incierto",
+                        "modelo": modelo, "formato": formato,
+                        "request_id": fallo.request_id,
+                        "motivo": fallo.motivo})
+        raise _con_consumo(fallo, consumo)
+    except BaseException as fallo:
+        if consumo:
+            _con_consumo(fallo, consumo)
+        raise
     informe = {"formato_pedido": pedido, "formato_usado": formato,
                "origen": origen, "sr": sr_destino,
                "caracteres": len(texto), "duracion": round(duracion, 3),
-               "request_id": (respuesta.headers or {}).get("request-id")}
+               "request_id": (respuesta.headers or {}).get("request-id"),
+               "consumo": consumo}
     return pcm, palabras, informe
 
 
@@ -651,13 +889,25 @@ def sintetizar_trozos(trozos, cfg, progreso=None, anterior="", siguiente=""):
     sr = int(cfg.get("sr") or SR)
     pcm, palabras, duracion = [], [], 0.0
     vivos = [i for i, t in enumerate(limpios) if t]
+    # LAS SECCIONES YA GRABADAS ESTAN COBRADAS aunque falle una de despues: van
+    # colgadas del fallo para que el medidor las anote (ver `pedir_toma`).
+    consumo = []
     for orden, indice in enumerate(vivos):
         antes = " ".join([_sin_etiquetas(anterior)] + limpios[:indice]).strip()
         despues = " ".join(limpios[indice + 1:] + [_sin_etiquetas(siguiente)]).strip()
         avisa(orden / max(1, len(vivos)),
               f"grabando seccion {orden + 1} de {len(vivos)}")
-        crudo, marcas, _ = pedir_toma(limpios[indice], cfg, antes, despues,
-                                      progreso=avisa)
+        try:
+            crudo, marcas, informe = pedir_toma(limpios[indice], cfg, antes, despues,
+                                                progreso=avisa)
+        except BaseException as fallo:
+            if consumo:
+                _con_consumo(fallo, consumo)
+                if isinstance(fallo, ResultadoIncierto) and orden:
+                    fallo.args = (f"{fallo.args[0]} (Las {orden} secciones "
+                                  f"anteriores si se grabaron y se cobraron.)",)
+            raise
+        consumo.extend(informe.get("consumo") or [])
         for marca in marcas:
             palabras.append({"w": marca["w"],
                              "s": round(marca["s"] + duracion, 3),

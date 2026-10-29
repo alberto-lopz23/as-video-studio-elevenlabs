@@ -129,6 +129,13 @@ def arrancar(puerto, carpeta):
     # acababan en la de verdad, mezclados con los de los videos de verdad.
     entorno["ESTUDIO_BITACORA_GLOBAL"] = os.path.join(carpeta, "bitacora_global.jsonl")
     entorno["ESTUDIO_COSTE_GLOBAL"] = os.path.join(carpeta, "coste_global.jsonl")
+    # Y LAS TARIFAS: la prueba cambia la de un modelo de ElevenLabs y la vuelve
+    # a dejar, y sin esto lo hacia sobre el tarifas.json del repositorio (lo
+    # dejaba con otra fecha de «actualizado», o con otro precio si se cortaba a
+    # medias). Se trabaja sobre una copia.
+    tarifas_prueba = os.path.join(carpeta, "tarifas.json")
+    shutil.copyfile(os.path.join(RAIZ_ESTUDIO, "tarifas.json"), tarifas_prueba)
+    entorno["ESTUDIO_TARIFAS"] = tarifas_prueba
     # LAS CLAVES DE LA MUSICA Y LOS EFECTOS SOLO DESDE LA CARPETA DE LA PRUEBA.
     # `sonido` las busca antes en el entorno, y heredadas de la maquina que
     # corre la suite harian que «sin claves» dependiera de quien la lanza

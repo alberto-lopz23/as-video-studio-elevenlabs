@@ -9,7 +9,10 @@ del pipeline corre en modo simulado. Lo que se prueba:
   [2]  la respuesta se valida por lo que LLEGA: PCM, WAV, MP3 (nunca leido como
        PCM), basura, longitud impar, frecuencia que no casa con las marcas
   [3]  si la cuenta rechaza el formato se prueba otro, y se convierte al interno
-  [4]  reintentos (429/5xx), clave mala, voz que no existe, limite de caracteres
+  [4]  reintentos (solo 429/503 y fallos ANTES de enviar), clave mala, voz que
+       no existe, limite de caracteres
+  [4b] sin cargos duplicados: un ReadTimeout, una conexion cortada o un
+       500/502/504 no se repiten; se mira el historial y se anota lo cobrado
   [5]  alineacion por caracter -> palabras, y tomas por secciones con contexto
   [6]  el catalogo de voces de la cuenta (/v2/voices, paginado)
   [7]  la configuracion: sin voz por defecto, formato, frecuencia, presets
@@ -362,12 +365,9 @@ def prueba_errores_de_la_api():
                  toma_ok(texto)]) as red:
         m.sintetizar_toma(texto, cfg_el())
     igual(len(red.llamadas), 2, "un 429 se reintenta")
-    with ConRed([Respuesta(500, texto="x")] * 3) as red:
+    with ConRed([Respuesta(503, texto="x")] * 3) as red:
         falla(lambda: m.sintetizar_toma(texto, cfg_el()),
-              "tres 5xx seguidos: error claro", RuntimeError, contiene="no contesta")
-    with ConRed([requests.ConnectionError("caida"), toma_ok(texto)]) as red:
-        m.sintetizar_toma(texto, cfg_el())
-    igual(len(red.llamadas), 2, "una caida de red se reintenta")
+              "tres 503 seguidos: error claro", RuntimeError, contiene="no ha aceptado")
     with ConRed([Respuesta(401, {"detail": {"message": "invalid api key"}})]):
         fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
                       "clave rechazada: error claro", RuntimeError, contiene="clave")
@@ -388,6 +388,163 @@ def prueba_errores_de_la_api():
         m.sintetizar_toma('Hola <break time="1s"/> <spell>mundo</spell>.', cfg_el())
     igual(red.llamadas[0]["json"]["text"], "Hola mundo .",
           "las etiquetas SSML no viajan: se locuta el texto limpio")
+
+
+def error_antes_del_envio():
+    """Un ConnectionError como el de requests cuando no se pudo conectar."""
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+    causa = NewConnectionError(None, "Failed to establish a new connection: refused")
+    return requests.ConnectionError(MaxRetryError(None, "/v1/tts", reason=causa))
+
+
+def error_tras_el_envio():
+    """Un ConnectionError de conexion cortada con la peticion ya mandada."""
+    from urllib3.exceptions import ProtocolError
+    return requests.ConnectionError(ProtocolError(
+        "Connection aborted.", ConnectionResetError(104, "Connection reset by peer")))
+
+
+def historial(*items, codigo=200):
+    return Respuesta(codigo, {"history": list(items), "has_more": False}
+                     if codigo == 200 else {"detail": "missing_permissions"})
+
+
+def item_historial(texto, desde=0, hasta=None, request_id="req-hist"):
+    hasta = len(texto) if hasta is None else hasta
+    return {"history_item_id": "h1", "request_id": request_id, "text": texto,
+            "character_count_change_from": desde, "character_count_change_to": hasta,
+            "date_unix": 2000000000}
+
+
+def prueba_sin_cargos_duplicados():
+    print("\n[4b] nunca se reenvia una peticion que pudo haberse cobrado")
+    m = motor()
+    texto = "Una frase de prueba."
+    llamadas_post = lambda red: [c for c in red.llamadas if "json" in c]
+    llamadas_get = lambda red: [c for c in red.llamadas if "json" not in c]
+
+    # --- lo que es SEGURO que no se envio: se reintenta
+    with ConRed([error_antes_del_envio(), toma_ok(texto)]) as red:
+        m.sintetizar_toma(texto, cfg_el())
+    igual(len(llamadas_post(red)), 2,
+          "no se pudo conectar (nada salio): se reintenta")
+    with ConRed([requests.exceptions.ConnectTimeout("connect timeout"),
+                 toma_ok(texto)]) as red:
+        m.sintetizar_toma(texto, cfg_el())
+    igual(len(llamadas_post(red)), 2, "un ConnectTimeout se reintenta")
+    with ConRed([Respuesta(503, {"detail": "unavailable"}), toma_ok(texto)]) as red:
+        m.sintetizar_toma(texto, cfg_el())
+    igual(len(llamadas_post(red)), 2, "un 503 se reintenta: la API no la acepto")
+    with ConRed([Respuesta(429, {"detail": "busy"})] * 3) as red:
+        falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+              "tres 429 seguidos: error que dice que no se cobro nada",
+              RuntimeError, contiene="no se ha cobrado")
+
+    # --- ReadTimeout: enviada, sin respuesta. NO se reintenta; se mira el historial
+    for nombre, error in (("ReadTimeout", requests.exceptions.ReadTimeout("read timeout")),
+                          ("conexion cortada tras el envio", error_tras_el_envio()),
+                          ("ChunkedEncodingError",
+                           requests.exceptions.ChunkedEncodingError("cortado"))):
+        with ConRed([error, historial(), historial()]) as red:
+            fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                          f"{nombre}: ResultadoIncierto, sin reintentar",
+                          m.ResultadoIncierto)
+        igual(len(llamadas_post(red)), 1, f"{nombre}: UNA sola peticion de sintesis")
+        if fallo is not None:
+            igual(fallo.historial["estado"], "no_encontrada",
+                  f"{nombre}: mira el historial y no la encuentra")
+            comprobar("probablemente no se cobro" in str(fallo)
+                      and "no se reintenta" in str(fallo),
+                      f"{nombre}: el aviso dice que es incierto y que no se repite")
+            igual([c["estado"] for c in fallo.consumo], ["incierto"],
+                  f"{nombre}: lo enviado queda como posible cobro")
+            igual(fallo.consumo[0]["caracteres"], len(texto), "con sus caracteres")
+
+    for codigo in (500, 502, 504):
+        with ConRed([Respuesta(codigo, texto="error"), historial(), historial()]) as red:
+            fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                          f"HTTP {codigo}: resultado incierto, no se repite",
+                          m.ResultadoIncierto)
+        igual(len(llamadas_post(red)), 1, f"HTTP {codigo}: una sola peticion")
+
+    # --- el historial confirma que SI se genero: se anota cobrada y no se repite
+    with ConRed([requests.exceptions.ReadTimeout("read timeout"),
+                 historial(item_historial(texto, 1000, 1000 + 20, "req-77"))]) as red:
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                      "si el historial la tiene: se dice que SI se genero",
+                      m.ResultadoIncierto, contiene="SI genero")
+    if fallo is not None:
+        comprobar(fallo.procesada, "procesada=True")
+        igual(fallo.consumo, [{"caracteres": 20, "estado": "cobrado",
+                               "modelo": "eleven_multilingual_v2", "formato": "pcm_24000",
+                               "request_id": "req-77", "motivo": "ReadTimeout"}],
+              "y se anota COBRADA con los caracteres que dice el historial")
+    get = llamadas_get(red)
+    comprobar(get and get[0]["url"].endswith("/v1/history")
+              and get[0]["params"].get("voice_id") == VOZ_EL,
+              "el historial se consulta por la voz usada (lectura, sin coste)")
+    igual(len(llamadas_post(red)), 1, "y no se vuelve a sintetizar")
+
+    # --- el historial no se puede leer (clave sin permiso): incierto y dicho
+    with ConRed([requests.exceptions.ReadTimeout("read timeout"),
+                 historial(codigo=403)]):
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                      "sin poder leer el historial: incierto, con instrucciones",
+                      m.ResultadoIncierto, contiene="Speech history")
+    if fallo is not None:
+        igual(fallo.historial["estado"], "desconocido", "estado desconocido")
+
+    # --- un 200 con audio inservible YA esta cobrado
+    with ConRed([Respuesta(200, {"audio_base64": "", "alignment": {}})]):
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()),
+                      "200 sin audio: falla", m.AudioInvalido)
+    if fallo is not None:
+        igual([c["estado"] for c in fallo.consumo], ["cobrado"],
+              "pero se anota como cobrado: la API contesto 200")
+
+    # --- un 4xx (formato, clave, voz) no se cobra: nada que anotar
+    with ConRed([Respuesta(404, {"detail": "voice not found"})]):
+        fallo = falla(lambda: m.sintetizar_toma(texto, cfg_el()), "404: falla",
+                      RuntimeError)
+    igual(getattr(fallo, "consumo", []), [], "un 404 no deja nada cobrado")
+
+    # --- por secciones: las anteriores cobradas, la que falla incierta, y para
+    trozos = ["Primera seccion.", "Segunda seccion.", "Tercera seccion."]
+    with ConRed([toma_ok(trozos[0], segundos=1.0),
+                 requests.exceptions.ReadTimeout("read timeout"),
+                 historial(), historial()]) as red:
+        fallo = falla(lambda: m.sintetizar_trozos(trozos, cfg_el()),
+                      "una seccion sin respuesta para la toma entera",
+                      m.ResultadoIncierto, contiene="anteriores si se grabaron")
+    igual(len(llamadas_post(red)), 2,
+          "no se pide la tercera ni se repite la segunda")
+    if fallo is not None:
+        igual(sorted(c["estado"] for c in fallo.consumo), ["cobrado", "incierto"],
+              "la primera queda cobrada y la segunda incierta")
+
+    # --- y el medidor de coste lo anota, a traves del camino real de p4_voz
+    proyecto, _ = preparar_proyecto("Proyecto sin respuesta")
+    medidor = coste.Medidor(proyecto)
+    envuelta = coste._medir_toma_por_contexto(p4_voz._toma_por_contexto)
+    with ConRed([toma_ok(trozos[0], segundos=1.0),
+                 requests.exceptions.ReadTimeout("read timeout"),
+                 historial(), historial()]):
+        with coste.contexto(proyecto, "voz"):
+            try:
+                envuelta(trozos, cfg_el(), None)
+            except Exception:                                # noqa: BLE001
+                pass
+    eventos = medidor.eventos()
+    igual(sorted(e["operacion"] for e in eventos), ["toma_fallida", "toma_incierta"],
+          "el medidor anota la seccion cobrada y la incierta aunque la toma falle")
+    igual({e["detalle"]["cobro"] for e in eventos}, {"cobrado", "incierto"},
+          "cada una con su tipo de cobro")
+    total = medidor.total()
+    once = total["proveedores"]["tts_elevenlabs"]
+    igual(once["caracteres_inciertos"], len(trozos[1]),
+          "el agregado cuenta aparte los caracteres inciertos")
+    comprobar(once["usd_incierto"] > 0 and "inciertos" in total["cabecera"],
+              f"y su importe, y la cabecera lo dice ({total['cabecera']})")
 
 
 def prueba_alineacion_y_secciones():
@@ -695,6 +852,7 @@ def main():
         prueba_validacion_del_audio()
         prueba_formato_rechazado()
         prueba_errores_de_la_api()
+        prueba_sin_cargos_duplicados()
         prueba_alineacion_y_secciones()
         prueba_catalogo()
         prueba_configuracion()

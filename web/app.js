@@ -4000,12 +4000,17 @@ function importeCoste(ficha, hueco) {
   if (ficha.usd === null || ficha.usd === undefined) {
     return h('span', { clase: 'meta', title: 'va contra la suscripción: no tiene importe' }, '—');
   }
+  /* LO INCIERTO SE MARCA. Una toma de voz sin respuesta puede haberse cobrado:
+     entra en el importe (el peor caso) y aquí se dice cuánto de él no es seguro. */
+  const incierto = Number(ficha.usd_incierto || 0);
   return h('span', {
     clase: ficha.usd_estimado ? 'usd derivado' : 'usd medido',
-    title: ficha.usd_estimado
+    title: (ficha.usd_estimado
       ? 'importe derivado de la tabla de tarifas (tarifas.json), no de una factura'
-      : 'importe medido',
-  }, `$${Number(ficha.usd).toFixed(2)}`);
+      : 'importe medido')
+      + (incierto > 0 ? `. Incluye $${incierto.toFixed(2)} de tomas sin respuesta `
+        + `que pueden no haberse cobrado (${ficha.caracteres_inciertos || 0} caracteres).` : ''),
+  }, `$${Number(ficha.usd).toFixed(2)}${incierto > 0 ? '*' : ''}`);
 }
 
 function pintarCoste() {

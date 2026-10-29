@@ -416,6 +416,10 @@ def _vacio(proveedor):
         "suma_al_total": proveedor not in SIN_DOLARES,
         "tokens": {"entrada": 0, "salida": 0, "cache": 0, "total": 0},
         "cantidad": {"imagenes": 0, "caracteres": 0},
+        # lo que PUEDE haberse cobrado (una toma sin respuesta): ya va dentro de
+        # usd y de caracteres, y aqui se cuenta aparte para que se vea
+        "usd_incierto": 0.0,
+        "caracteres_inciertos": 0,
     }
 
 
@@ -434,6 +438,11 @@ def _acumular(destino, registro):
         destino["usd_estimado"] = True
     if registro.get("sin_tarifa"):
         destino["sin_tarifa"] = True
+    if (registro.get("detalle") or {}).get("cobro") == "incierto":
+        destino["caracteres_inciertos"] += _cantidad(
+            registro.get("cantidad")).get("caracteres", 0)
+        if importe is not None:
+            destino["usd_incierto"] = round(destino["usd_incierto"] + importe, 6)
 
 
 def corto(numero):
@@ -470,8 +479,10 @@ def cabecera(proveedores, total_usd):
         if voz["eventos"]:
             trozos.append(f"Cartesia  {importe(voz)} · "
                           f"{corto(voz['cantidad']['caracteres'])} car")
+        incierto = (f" ({corto(once['caracteres_inciertos'])} inciertos)"
+                    if once.get("caracteres_inciertos") else "")
         trozos.append(f"ElevenLabs  {importe(once)} · "
-                      f"{corto(once['cantidad']['caracteres'])} car")
+                      f"{corto(once['cantidad']['caracteres'])} car{incierto}")
     else:
         trozos.append(f"TTS  {importe(voz)} · {corto(voz['cantidad']['caracteres'])} car")
     trozos += [f"Claude  {corto(cli['tokens']['total'])} tok",
@@ -746,9 +757,43 @@ def _medir_previsualizacion(original):
     return medido
 
 
+def _anotar_consumo_fallido(fallo, cfg):
+    """Lo cobrado (o posiblemente cobrado) por una toma que ha FALLADO.
+
+    Un fallo no es «nada que contar»: con ElevenLabs, un 200 cuyo audio no sirve
+    ya esta cobrado, las secciones grabadas antes de la que falla tambien, y un
+    tiempo de espera con la peticion ya enviada puede estarlo. El motor cuelga
+    esa lista del fallo (`consumo`) y aqui se anota, cada entrada con su
+    `cobro`: "cobrado" o "incierto". Lo incierto entra en el importe --es el
+    peor caso, y mejor pasarse que esconder un gasto-- y va contado aparte
+    (`usd_incierto`) para que se vea que no es seguro.
+    """
+    consumo = getattr(fallo, "consumo", None)
+    if not consumo:
+        return
+    cfg = cfg if isinstance(cfg, dict) else {}
+    proveedor = cfg.get("proveedor") or "cartesia"
+    for entrada in consumo:
+        if not isinstance(entrada, dict):
+            continue
+        estado = entrada.get("estado") or "incierto"
+        reportar_tts(int(entrada.get("caracteres") or 0),
+                     operacion="toma_fallida" if estado == "cobrado" else "toma_incierta",
+                     proveedor=proveedor, modelo=entrada.get("modelo") or cfg.get("modelo"),
+                     detalle={"modelo": entrada.get("modelo") or cfg.get("modelo"),
+                              "voz_id": cfg.get("voz_id"),
+                              "proveedor": proveedor, "cobro": estado,
+                              "request_id": entrada.get("request_id"),
+                              "motivo": str(entrada.get("motivo") or fallo)[:200]})
+
+
 def _medir_toma_real(original):
     def medido(texto, cfg, *args, **kwargs):
-        resultado = original(texto, cfg, *args, **kwargs)
+        try:
+            resultado = original(texto, cfg, *args, **kwargs)
+        except BaseException as fallo:
+            _anotar_consumo_fallido(fallo, cfg)
+            raise
         # se anota DESPUES y con el texto que se envio: si la llamada revienta
         # no hay recuento fiable y preferimos un hueco a un numero inventado
         cfg = cfg if isinstance(cfg, dict) else {}
@@ -778,7 +823,11 @@ def _medir_toma_por_contexto(original):
     fiable, y un hueco es mejor que un numero inventado.
     """
     def medido(trozos, cfg, *args, **kwargs):
-        resultado = original(trozos, cfg, *args, **kwargs)
+        try:
+            resultado = original(trozos, cfg, *args, **kwargs)
+        except BaseException as fallo:
+            _anotar_consumo_fallido(fallo, cfg)
+            raise
         cfg = cfg if isinstance(cfg, dict) else {}
         piezas = list(trozos or [])
         proveedor = cfg.get("proveedor") or "cartesia"

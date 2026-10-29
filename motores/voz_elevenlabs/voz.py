@@ -699,8 +699,9 @@ def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None, mod
         try:
             respuesta = requests.get(
                 API_HISTORIAL, headers={"xi-api-key": api_key},
-                params={"voice_id": voz_id, "page_size": 50,
-                        "date_after_unix": max(0, int(desde_unix) - 5),
+                params={"voice_id": voz_id, "model_id": modelo, "source": "TTS",
+                        "page_size": 100,
+                        "date_after_unix": max(0, int(desde_unix) - 2),
                         "sort_direction": "desc"},
                 timeout=(TIEMPO_CONEXION_S, 30))
         except errores_http.RequestException as fallo:
@@ -729,11 +730,15 @@ def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None, mod
                 continue
             if fecha < int(desde_unix) - 2 or fecha > ahora + 2:
                 continue
-            if item.get("voice_id") != voz_id or not item.get("voice_id"):
+            if not item.get("voice_id"):
+                falta_metadatos = True
+                continue
+            if item.get("voice_id") != voz_id:
+                continue
+            if not item.get("model_id"):
                 falta_metadatos = True
                 continue
             if not modelo or item.get("model_id") != modelo:
-                falta_metadatos = True
                 continue
             if ajustes:
                 hist_ajustes = item.get("settings")
@@ -747,11 +752,15 @@ def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None, mod
                 continue
             candidatos.append(item)
         por_id = [i for i in candidatos if request_id and i.get("request_id") == request_id]
-        if len(por_id) == 1:
-            elegido = por_id[0]
-        elif len(por_id) > 1:
-            return {"estado": "desconocido",
-                    "motivo": "varias entradas coinciden con el request_id"}
+        if request_id:
+            if len(por_id) == 1:
+                elegido = por_id[0]
+            elif len(por_id) > 1:
+                return {"estado": "desconocido",
+                        "motivo": "varias entradas coinciden con el request_id"}
+            else:
+                motivo = "el historial no contiene el request_id de la solicitud"
+                continue
         elif len(candidatos) == 1:
             elegido = candidatos[0]
         elif len(candidatos) > 1:

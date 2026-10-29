@@ -3303,7 +3303,9 @@ def _producir_imagen(nombre, prompt, referencias, destino, p, rehacer=False,
         fh.write(png)
     medios.copiar(destino, cacheada)
     hecho = {"origen": "generada", "firma": firma, "coste": meta["coste"],
-             "segundos": meta["segundos"]}
+             "segundos": meta["segundos"],
+             "proveedor": meta.get("proveedor", "openai"),
+             "modelo": meta.get("modelo", "gpt-image-2")}
     if sin_cita:
         hecho["sin_cita_narracion"] = True
         hecho["prompt_enviado"] = prompt_seguro

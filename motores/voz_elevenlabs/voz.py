@@ -683,7 +683,7 @@ def antes_del_envio(fallo):
     return False
 
 
-def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None):
+def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None, modelo=None, ajustes=None, request_id=None):
     """¿Esta la toma en el historial de la cuenta? Solo lectura, no cuesta nada.
 
     Devuelve {"estado": "procesada" | "no_encontrada" | "desconocido", ...}.
@@ -714,19 +714,64 @@ def verificar_en_historial(api_key, texto, voz_id, desde_unix, esperas=None):
             items = (respuesta.json() or {}).get("history") or []
         except ValueError:
             return {"estado": "desconocido", "motivo": "el historial no es JSON"}
+        candidatos = []
+        falta_metadatos = False
+        ahora = int(time.time())
         for item in items:
+            if not isinstance(item, dict):
+                continue
             if " ".join(str(item.get("text") or "").split()) != objetivo:
                 continue
             try:
-                cobrados = abs(int(item.get("character_count_change_to") or 0)
-                               - int(item.get("character_count_change_from") or 0))
+                fecha = int(item.get("date_unix"))
             except (TypeError, ValueError):
-                cobrados = 0
-            return {"estado": "procesada",
-                    "history_item_id": item.get("history_item_id"),
-                    "request_id": item.get("request_id"),
-                    "caracteres": cobrados or len(objetivo)}
-        motivo = ""
+                falta_metadatos = True
+                continue
+            if fecha < int(desde_unix) - 2 or fecha > ahora + 2:
+                continue
+            if item.get("voice_id") != voz_id or not item.get("voice_id"):
+                falta_metadatos = True
+                continue
+            if not modelo or item.get("model_id") != modelo:
+                falta_metadatos = True
+                continue
+            if ajustes:
+                hist_ajustes = item.get("settings")
+                if not isinstance(hist_ajustes, dict):
+                    falta_metadatos = True
+                    continue
+                if any(k not in hist_ajustes or hist_ajustes[k] != v
+                       for k, v in ajustes.items()):
+                    continue
+            if item.get("source") != "TTS":
+                continue
+            candidatos.append(item)
+        por_id = [i for i in candidatos if request_id and i.get("request_id") == request_id]
+        if len(por_id) == 1:
+            elegido = por_id[0]
+        elif len(por_id) > 1:
+            return {"estado": "desconocido",
+                    "motivo": "varias entradas coinciden con el request_id"}
+        elif len(candidatos) == 1:
+            elegido = candidatos[0]
+        elif len(candidatos) > 1:
+            return {"estado": "desconocido",
+                    "motivo": "varias generaciones coinciden con el mismo texto"}
+        elif falta_metadatos:
+            motivo = "hay texto coincidente, pero faltan metadatos para confirmarlo"
+            continue
+        else:
+            motivo = ""
+            continue
+        try:
+            cobrados = abs(int(elegido.get("character_count_change_to") or 0)
+                           - int(elegido.get("character_count_change_from") or 0))
+        except (TypeError, ValueError):
+            cobrados = 0
+        return {"estado": "procesada",
+                "history_item_id": elegido.get("history_item_id"),
+                "request_id": elegido.get("request_id"),
+                "caracteres": cobrados or len(objetivo)}
     if motivo:
         return {"estado": "desconocido", "motivo": motivo}
     return {"estado": "no_encontrada",
@@ -744,14 +789,16 @@ def _con_consumo(fallo, consumo):
     return fallo
 
 
-def _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa):
+def _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa, modelo=None, ajustes=None):
     """Completa un ResultadoIncierto mirando el historial, y escribe el aviso."""
     fallo.caracteres = len(texto)
     historial = {"estado": "desconocido", "motivo": "comprobacion desactivada"}
     if VERIFICAR_HISTORIAL:
         avisa(None, "ElevenLabs no ha contestado; miro tu historial para saber "
                     "si la toma se genero")
-        historial = verificar_en_historial(api_key, texto, voz_id, desde)
+        historial = verificar_en_historial(api_key, texto, voz_id, desde,
+                                           modelo=modelo, ajustes=ajustes,
+                                           request_id=fallo.request_id)
     fallo.historial = historial
     if historial["estado"] == "procesada":
         fallo.procesada = True
@@ -847,7 +894,8 @@ def pedir_toma(texto, cfg, anterior="", siguiente="", progreso=None):
                                 "sin marcas no se puede sincronizar el montaje")
         duracion = validar_duracion(pcm, sr_destino, palabras)
     except ResultadoIncierto as fallo:
-        _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa)
+        _explicar_incierto(fallo, texto, voz_id, api_key, desde, avisa,
+                           modelo=modelo, ajustes=cfg.get("voice_settings") or {})
         consumo.append({"caracteres": fallo.caracteres,
                         "estado": "cobrado" if fallo.procesada else "incierto",
                         "modelo": modelo, "formato": formato,

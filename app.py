@@ -6613,7 +6613,9 @@ def probar_claves(cuerpo: dict = Body(default=None)):
     if PASOS_MODULOS is None:
         raise ErrorApi(503, f"los pasos no se han podido cargar: {ERROR_PASOS}")
     cuentas = []
-    if con_claude:
+    # En modo simulado no se inspecciona el CLI ni se consulta ninguna sesión
+    # real; el doble de comprobar_claves devuelve resultados locales.
+    if con_claude and not PASOS_MODULOS.salud_cli.simulado():
         try:
             cuentas = [c for c in _candidatas_del_asistente()
                        if _sesion_de(c).get("conectada")]
